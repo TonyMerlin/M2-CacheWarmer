@@ -3,18 +3,23 @@ declare(strict_types=1);
 namespace Merlin\CacheWarmer\Service;
 
 use Magento\Framework\App\ResourceConnection;
-use Magento\Framework\HTTP\Client\Curl;
-use Magento\Framework\Stdlib\DateTime\DateTime;
 
 class WarmService
 {
     public function __construct(
-        private readonly ResourceConnection $resource,
-        private readonly Curl $curl,
-        private readonly DateTime $dateTime
+        private readonly ResourceConnection $resource
     ) {}
 
-    public function process(int $limit = 0, int $sleepMs = 0, int $timeout = 15, array $headers = [], string $userAgent = 'MerlinCacheWarmer/1.0'): array
+    public function process(int $limit = 0, int $sleepMs = 0, int $timeout = 15, array $headers = [], string $userAgent = 'MerlinCacheWarmer/1.0', bool $ignoreDelay = false): array
+    {
+        return $this->processBatch(max(1, $limit), $sleepMs, $timeout, $headers, $userAgent, 1, $ignoreDelay);
+    }
+
+    /**
+     * Concurrent batch processor using curl_multi.
+     * @return array{processed:int,success:int,failed:int}
+     */
+    public function processBatch(int $limit, int $sleepMs, int $timeout, array $headers, string $userAgent, int $concurrency, bool $ignoreDelay = false): array
     {
         $connection = $this->resource->getConnection();
         $table = $this->resource->getTableName('merlin_cachewarmer_queue');
@@ -26,84 +31,91 @@ class WarmService
             'Accept-Encoding' => 'gzip, deflate',
             'X-Merlin-CacheWarmer' => '1'
         ], $headers);
-
-        $this->curl->setTimeout($timeout);
+        $headerLines = [];
         foreach ($headers as $k => $v) {
-            $this->curl->addHeader((string)$k, (string)$v);
+            $headerLines[] = $k . ': ' . $v;
         }
 
         while (true) {
-            $now = gmdate('Y-m-d H:i:s', $this->dateTime->gmtTimestamp());
+            $take = $limit > 0 ? min($concurrency, $limit - $processed) : $concurrency;
+            if ($take <= 0) break;
+
+            $now = gmdate('Y-m-d H:i:s');
             $select = $connection->select()
-                ->from($table)
-                ->where('status = ?', 'pending')
-                ->where('not_before IS NULL OR not_before <= ?', $now)
-                ->order('priority DESC')
-                ->order('queue_id ASC')
-                ->limit(1)
-                ->forUpdate(true);
+                ->from($table, ['queue_id','url','attempts'])
+                ->where('status = ?', 'pending');
+            if (!$ignoreDelay) {
+                $select->where('not_before IS NULL OR not_before <= ?', $now);
+            }
+            $select->order('priority DESC')->order('queue_id ASC')->limit($take)->forUpdate(true);
 
-            $row = $connection->fetchRow($select);
-            if (!$row) {
-                break;
+            $rows = $connection->fetchAll($select);
+            if (!$rows) break;
+
+            $claimed = [];
+            foreach ($rows as $row) {
+                $updated = $connection->update(
+                    $table,
+                    ['status' => 'processing', 'lock_uuid' => $uuid],
+                    ['queue_id = ?' => (int)$row['queue_id'], 'status = ?' => 'pending']
+                );
+                if ($updated) {
+                    $claimed[] = $row;
+                }
+            }
+            if (!$claimed) break;
+
+            $mh = curl_multi_init();
+            $handles = [];
+            foreach ($claimed as $row) {
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, $row['url']);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
+                curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+                curl_setopt($ch, CURLOPT_ENCODING, '');
+                curl_setopt($ch, CURLOPT_NOBODY, false);
+                curl_multi_add_handle($mh, $ch);
+                $handles[] = ['handle' => $ch, 'row' => $row, 'start' => microtime(true)];
             }
 
-            $connection->update(
-                $table,
-                ['status' => 'processing', 'lock_uuid' => $uuid],
-                ['queue_id = ?' => (int)$row['queue_id'], 'status = ?' => 'pending']
-            );
+            do {
+                $status = curl_multi_exec($mh, $running);
+                if ($running) curl_multi_select($mh, 1.0);
+            } while ($running && $status == CURLM_OK);
 
-            $row2 = $connection->fetchRow(
-                $connection->select()->from($table)
-                    ->where('queue_id = ?', (int)$row['queue_id'])
-                    ->where('lock_uuid = ?', $uuid)
-            );
-            if (!$row2) {
-                continue;
-            }
-
-            $processed++;
-            $start = microtime(true);
-            try {
-                $this->curl->get($row['url']);
-                $code = $this->curl->getStatus();
-                $duration = (microtime(true) - $start) * 1000.0;
+            foreach ($handles as $info) {
+                $h = $info['handle'];
+                $row = $info['row'];
+                $duration = (microtime(true) - $info['start']) * 1000.0;
+                $code = curl_getinfo($h, CURLINFO_HTTP_CODE);
+                $err = curl_error($h);
                 $ok = ($code >= 200 && $code < 400);
 
                 $connection->update($table, [
                     'status' => $ok ? 'done' : 'failed',
-                    'response_code' => $code,
+                    'response_code' => $code ?: null,
                     'duration_ms' => $duration,
                     'attempts' => ((int)$row['attempts']) + 1,
-                    'updated_at' => gmdate('Y-m-d H:i:s', $this->dateTime->gmtTimestamp()),
-                    'last_error' => $ok ? null : 'HTTP ' . $code
+                    'updated_at' => gmdate('Y-m-d H:i:s'),
+                    'last_error' => $ok ? null : (strlen($err) ? substr($err, 0, 1024) : ('HTTP ' . (int)$code))
                 ], ['queue_id = ?' => (int)$row['queue_id']]);
 
-                if ($ok) { $success++; } else { $failed++; }
-            } catch (\Throwable $e) {
-                $duration = (microtime(true) - $start) * 1000.0;
-                $connection->update($table, [
-                    'status' => 'failed',
-                    'response_code' => null,
-                    'duration_ms' => $duration,
-                    'attempts' => ((int)$row['attempts']) + 1,
-                    'updated_at' => gmdate('Y-m-d H:i:s', $this->dateTime->gmtTimestamp()),
-                    'last_error' => substr($e->getMessage(), 0, 1024)
-                ], ['queue_id = ?' => (int)$row['queue_id']]);
-                $failed++;
+                curl_multi_remove_handle($mh, $h);
+                curl_close($h);
+                $processed++; $ok ? $success++ : $failed++;
             }
+            curl_multi_close($mh);
 
-            if ($sleepMs > 0) {
+            if ($sleepMs > 0):
                 usleep($sleepMs * 1000);
-            }
+            endif;
 
-            if ($limit > 0 && $processed >= $limit) {
-                break;
-            }
+            if ($limit > 0 && $processed >= $limit) break;
         }
 
-        return ['processed' => $processed, 'success' => $success, 'failed' => $failed];
+        return compact('processed','success','failed');
     }
 
     public function getStatus(int $limitList = 20): array

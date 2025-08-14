@@ -1,6 +1,5 @@
 <?php
 declare(strict_types=1);
-
 namespace Merlin\CacheWarmer\Console\Command;
 
 use Symfony\Component\Console\Command\Command;
@@ -21,13 +20,15 @@ class StartQueueCommand extends Command
 
     protected function configure()
     {
-        $this->setName('merlin:cache:queue:start') // explicit for Magento interceptors
-            ->setDescription('Process (warm) URLs from the queue with a progress bar and timer.')
+        $this->setName('merlin:cache:queue:start')
+            ->setDescription('Process (warm) URLs from the queue with progress/timer and concurrency.')
             ->addOption('limit', 'l', InputOption::VALUE_OPTIONAL, 'Maximum URLs to process this run (0 = no limit)', 0)
-            ->addOption('sleep', null, InputOption::VALUE_OPTIONAL, 'Sleep between requests in milliseconds', 0)
+            ->addOption('sleep', null, InputOption::VALUE_OPTIONAL, 'Sleep between batches in milliseconds', 0)
             ->addOption('timeout', 't', InputOption::VALUE_OPTIONAL, 'HTTP timeout seconds', 15)
             ->addOption('header', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Additional request header(s), format Key: Value')
-            ->addOption('user-agent', null, InputOption::VALUE_OPTIONAL, 'Override User-Agent header');
+            ->addOption('user-agent', null, InputOption::VALUE_OPTIONAL, 'Override User-Agent header')
+            ->addOption('concurrency', 'c', InputOption::VALUE_OPTIONAL, 'Parallel requests per batch', 8)
+            ->addOption('ignore-delay', null, InputOption::VALUE_NONE, 'Process even if not_before is in the future');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
@@ -36,6 +37,8 @@ class StartQueueCommand extends Command
         $sleep   = (int)$input->getOption('sleep');
         $timeout = (int)$input->getOption('timeout');
         $ua      = (string)$input->getOption('user-agent') ?: 'MerlinCacheWarmer/1.0';
+        $conc    = max(1, (int)$input->getOption('concurrency'));
+        $ignore  = (bool)$input->getOption('ignore-delay');
 
         $headers = [];
         foreach ((array)$input->getOption('header') as $h) {
@@ -45,40 +48,35 @@ class StartQueueCommand extends Command
             }
         }
 
-        // Estimate total for the progress bar (don’t hard-depend on DB here)
         $status = $this->warmService->getStatus(0);
         $estimatedTotal = (int)($status['counts']['pending'] ?? 0);
         $total = $limit > 0 ? $limit : ($estimatedTotal > 0 ? $estimatedTotal : 1);
 
-        // Start timer
         $startedAt = microtime(true);
-
-        // Progress bar with live elapsed timer via %message%
         $progress = new ProgressBar($output, $total);
         $progress->setFormat('%current%/%max% [%bar%] %percent:3s%% | Elapsed: %message%');
-        $progress->setMessage($this->formatDuration(0.0)); // initial 00:00:00.000
+        $progress->setMessage($this->formatDuration(0.0));
         $progress->start();
 
         $processed = $success = $failed = 0;
 
         while (true) {
-            // Process one at a time so we can tick smoothly
-            $result = $this->warmService->process(1, $sleep, $timeout, $headers, $ua);
+            $take = $limit > 0 ? min($conc, $limit - $processed) : $conc;
+            if ($take <= 0) break;
 
-            if (($result['processed'] ?? 0) === 0) {
-                break; // nothing eligible right now
+            $result = $this->warmService->processBatch($take, $sleep, $timeout, $headers, $ua, $take, $ignore);
+            if (($result['processed'] ?? 0) == 0) {
+                break;
             }
 
             $processed += $result['processed'];
             $success   += $result['success'];
             $failed    += $result['failed'];
 
-            // Extend the bar if we under-estimated and no --limit set
-            if ($limit === 0 && $processed > $progress->getMaxSteps()) {
+            if ($limit == 0 && $processed > $progress->getMaxSteps()) {
                 $progress->setMaxSteps($processed);
             }
 
-            // Update elapsed time message
             $progress->setMessage($this->formatDuration(microtime(true) - $startedAt));
             $progress->advance($result['processed']);
 
@@ -89,13 +87,10 @@ class StartQueueCommand extends Command
 
         $progress->finish();
         $output->writeln('');
-
-        $totalElapsed = $this->formatDuration(microtime(true) - $startedAt);
         $output->writeln(sprintf(
             "<info>Processed: %d | Success: %d | Failed: %d | Total time: %s</info>",
-            $processed, $success, $failed, $totalElapsed
+            $processed, $success, $failed, $this->formatDuration(microtime(true) - $startedAt)
         ));
-
         return 0;
     }
 

@@ -1,5 +1,7 @@
 # Merlin_CacheWarmer (console-only)
 
+v2.2 adds concurrency
+
 Cache warming extension for Magento 2.4.5+ (PHP 8.1+) by **Merlin**.  
 No admin UI everything works via CLI.
 
@@ -29,7 +31,8 @@ bin/magento merlin:cache:queue:build [--sitemap <sitemap.xml|URL>] [--file <urls
 
 ### Start processing
 
-bin/magento merlin:cache:queue:start [--limit 0] [--sleep 0] [--timeout 15] [--header "Key: Value" ...] [--user-agent "UA"]
+bin/magento merlin:cache:queue:start [--concurrency 10] [--limit 0] [--sleep 0] [--timeout 15] [--header "Key: Value" ...] [--user-agent "UA"]
+Added - **Concurrency** via `--concurrency` (default 8), using curl_multi
 
 - Makes HTTP GET requests to each URL with headers:
   - `User-Agent: MerlinCacheWarmer/1.0` (override with `--user-agent`)
