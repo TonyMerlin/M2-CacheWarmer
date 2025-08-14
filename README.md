@@ -1,8 +1,7 @@
 # Merlin_CacheWarmer (console-only)
 
 Cache warming extension for Magento 2.4.5+ (PHP 8.1+) by **Merlin**.  
-Designed for Rocky Linux 9 with Nginx, PHP-FPM, Varnish and HAProxy.  
-No admin UI â€” everything via CLI.
+No admin UI everything works via CLI.
 
 ## Install
 1. Copy the module to `app/code/Merlin/CacheWarmer`
