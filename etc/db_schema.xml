@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Setup/Declaration/Schema/etc/schema.xsd">
+    <table name="merlin_cachewarmer_queue" resource="default" engine="innodb" comment="Merlin CacheWarmer Queue">
+        <column xsi:type="int" name="queue_id" padding="10" unsigned="true" nullable="false" identity="true" comment="ID"/>
+        <column xsi:type="text" name="url" nullable="false" length="2048" comment="URL"/>
+        <column xsi:type="smallint" name="store_id" nullable="true" default="0" comment="Store ID"/>
+        <column xsi:type="smallint" name="priority" nullable="false" default="0" comment="Priority (higher first)"/>
+        <column xsi:type="varchar" name="status" nullable="false" length="16" default="pending" comment="pending|processing|done|failed"/>
+        <column xsi:type="int" name="attempts" nullable="false" default="0" comment="Attempts"/>
+        <column xsi:type="varchar" name="lock_uuid" nullable="true" length="64" comment="Lock UUID"/>
+        <column xsi:type="int" name="response_code" nullable="true" comment="HTTP Response Code"/>
+        <column xsi:type="decimal" name="duration_ms" precision="12" scale="3" nullable="true" comment="Request duration in ms"/>
+        <column xsi:type="text" name="last_error" nullable="true" comment="Last error message"/>
+        <column xsi:type="timestamp" name="not_before" nullable="true" default="NULL" comment="Do not process before"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false" default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false" default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="queue_id"/>
+        </constraint>
+        <index referenceId="MERLIN_CACHEWARMER_STATUS" indexType="btree">
+            <column name="status"/>
+        </index>
+        <index referenceId="MERLIN_CACHEWARMER_PRIORITY" indexType="btree">
+            <column name="priority"/>
+        </index>
+        <index referenceId="MERLIN_CACHEWARMER_NOT_BEFORE" indexType="btree">
+            <column name="not_before"/>
+        </index>
+    </table>
+</schema>
