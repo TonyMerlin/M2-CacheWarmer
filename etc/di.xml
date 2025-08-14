@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <type name="Magento\Framework\Console\CommandList">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="merlin_cachewarmer_build" xsi:type="object">Merlin\CacheWarmer\Console\Command\BuildQueueCommand</item>
+                <item name="merlin_cachewarmer_start" xsi:type="object">Merlin\CacheWarmer\Console\Command\StartQueueCommand</item>
+                <item name="merlin_cachewarmer_status" xsi:type="object">Merlin\CacheWarmer\Console\Command\StatusQueueCommand</item>
+            </argument>
+        </arguments>
+    </type>
+</config>
