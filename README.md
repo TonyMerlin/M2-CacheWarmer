@@ -1,9 +1,13 @@
 # Merlin_CacheWarmer (console-only)
 
-v2.2 adds concurrency
-
 Cache warming extension for Magento 2.4.5+ (PHP 8.1+) by **Merlin**.  
 No admin UI everything works via CLI.
+
+v2.0.3 Fixes "The attribute 'length' is not allowed" error
+
+v2.0.2 adds concurrency
+
+
 
 ## Install
 1. Copy the module to `app/code/Merlin/CacheWarmer`
